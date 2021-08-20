@@ -7,17 +7,21 @@ using Microsoft.Extensions.Logging;
 
 namespace Controllers
 {
+	// 1. непонятно почему-то выбран редис для хранения заказов, каким образом будет гарантироваться транзакционность?
+	// 2. почему интерфейс синхронный?
+    	// 3. почему работа с фигурами идет поштучно?
 	internal interface IRedisClient
 	{
-		int Get(string type);
-		void Set(string type, int current);
+		int Get(string type); // почему в качестве типа выбрана строка?
+		void Set(string type, int current); // где гарантии, что мы не затрем чужие изменения? почему передается количество, а не изменение?
 	}
-	
+
+	// статика - плохая идея для хранилища
 	public static class FiguresStorage
 	{
 		// корректно сконфигурированный и готовый к использованию клиент Редиса
 		private static IRedisClient RedisClient { get; }
-	
+
 		public static bool CheckIfAvailable(string type, int count)
 		{
 			return RedisClient.Get(type) >= count;
@@ -33,7 +37,7 @@ namespace Controllers
 
 	public class Position
 	{
-		public string Type { get; set; }
+		public string Type { get; set; } // лучше enum или что-нибудь вроде него
 
 		public float SideA { get; set; }
 		public float SideB { get; set; }
@@ -51,9 +55,11 @@ namespace Controllers
 	{
 		public List<Figure> Positions { get; set; }
 
+        	// логику расчета лучше вынести в отдельный сервис + константы вынести в настройки
 		public decimal GetTotal() =>
 			Positions.Select(p => p switch
 				{
+                    			// лучше Triangle triangle => (decimal) triangle.GetArea() * 1.2m,
 					Triangle => (decimal) p.GetArea() * 1.2m,
 					Circle => (decimal) p.GetArea() * 0.9m
 				})
@@ -62,6 +68,7 @@ namespace Controllers
 
 	public abstract class Figure
 	{
+        	// эти поля здесь не нужны
 		public float SideA { get; set; }
 		public float SideB { get; set; }
 		public float SideC { get; set; }
@@ -77,7 +84,7 @@ namespace Controllers
 			bool CheckTriangleInequality(float a, float b, float c) => a < b + c;
 			if (CheckTriangleInequality(SideA, SideB, SideC)
 			    && CheckTriangleInequality(SideB, SideA, SideC)
-			    && CheckTriangleInequality(SideC, SideB, SideA)) 
+			    && CheckTriangleInequality(SideC, SideB, SideA))
 				return;
 			throw new InvalidOperationException("Triangle restrictions not met");
 		}
@@ -87,27 +94,30 @@ namespace Controllers
 			var p = (SideA + SideB + SideC) / 2;
 			return Math.Sqrt(p * (p - SideA) * (p - SideB) * (p - SideC));
 		}
-		
+
 	}
-	
+
 	public class Square : Figure
 	{
 		public override void Validate()
 		{
+		    	// <= скорее всего
 			if (SideA < 0)
 				throw new InvalidOperationException("Square restrictions not met");
-			
+
+            		// эту проверку можно убрать и вообще поле SideB не использовать
 			if (SideA != SideB)
 				throw new InvalidOperationException("Square restrictions not met");
 		}
 
 		public override double GetArea() => SideA * SideA;
 	}
-	
+
 	public class Circle : Figure
 	{
 		public override void Validate()
 		{
+			// <= скорее всего
 			if (SideA < 0)
 				throw new InvalidOperationException("Circle restrictions not met");
 		}
@@ -118,9 +128,10 @@ namespace Controllers
 	public interface IOrderStorage
 	{
 		// сохраняет оформленный заказ и возвращает сумму
-		Task<decimal> Save(Order order);
+		Task<decimal> Save(Order order); // SaveAsync лучше
+						// почему возвращается сумма заказа, а не, например, идентификатор заказа?
 	}
-	
+
 	[ApiController]
 	[Route("[controller]")]
 	public class FiguresController : ControllerBase
@@ -138,16 +149,19 @@ namespace Controllers
 		[HttpPost]
 		public async Task<ActionResult> Order(Cart cart)
 		{
+            		// бизнес логика в контроллере, лучше ее перенести в более подходящее место
+
 			foreach (var position in cart.Positions)
 			{
 				if (!FiguresStorage.CheckIfAvailable(position.Type, position.Count))
 				{
-					return new BadRequestResult();
+					return new BadRequestResult(); // неплохо бы написать что не так с запросом
 				}
 			}
 
 			var order = new Order
 			{
+                		// лучше вынести в отдельную фабрику фигур
 				Positions = cart.Positions.Select(p =>
 				{
 					Figure figure = p.Type switch
@@ -159,19 +173,21 @@ namespace Controllers
 					figure.SideA = p.SideA;
 					figure.SideB = p.SideB;
 					figure.SideC = p.SideC;
-					figure.Validate();
+					figure.Validate(); // при вызове валидации упадет InvalidOperationException, надо сделать так, чтобы вернулся Bad Request
 					return figure;
 				}).ToList()
 			};
 
+            		// где гарантии, что между резервом и проверкой наличия, кто-нибудь не успеет заказать товар?
 			foreach (var position in cart.Positions)
 			{
 				FiguresStorage.Reserve(position.Type, position.Count);
 			}
 
+		    	// await
 			var result = _orderStorage.Save(order);
 
-			return new OkObjectResult(result.Result);
+			return new OkObjectResult(result.Result); // .Result плохая практика
 		}
 	}
 }
